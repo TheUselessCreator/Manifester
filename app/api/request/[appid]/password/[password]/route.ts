@@ -4,6 +4,8 @@ export async function GET(request: NextRequest, { params }: { params: { appid: s
   try {
     const { appid, password } = params
 
+    console.log("API Request received for appid:", appid)
+
     const API_PASSWORD = process.env.API_PASSWORD
 
     if (!API_PASSWORD) {
@@ -12,6 +14,7 @@ export async function GET(request: NextRequest, { params }: { params: { appid: s
     }
 
     if (password !== API_PASSWORD) {
+      console.log("Password mismatch")
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
@@ -21,44 +24,61 @@ export async function GET(request: NextRequest, { params }: { params: { appid: s
 
     let gameName = "Unknown Game"
     try {
-      const steamApiUrl = `https://store.steampowered.com/api/appdetails?appids=${appid}`
-      const steamResponse = await fetch(steamApiUrl)
-      const steamData = await steamResponse.json()
+      const steamDbUrl = `https://api.steamdb.info/v1/app/${appid}/`
+      const steamController = new AbortController()
+      const steamTimeout = setTimeout(() => steamController.abort(), 3000)
 
-      if (steamData[appid]?.success && steamData[appid]?.data?.name) {
-        gameName = steamData[appid].data.name
+      const steamResponse = await fetch(steamDbUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          Accept: "application/json",
+        },
+        signal: steamController.signal,
+      }).catch(() => null)
+
+      clearTimeout(steamTimeout)
+
+      if (steamResponse?.ok) {
+        const steamData = await steamResponse.json().catch(() => null)
+        if (steamData?.data?.name) {
+          gameName = steamData.data.name
+          console.log("Game name fetched:", gameName)
+        }
       }
-    } catch (error) {
-      console.log("Failed to fetch game name from Steam API:", error)
+    } catch {
+      // Silently ignore all Steam API errors
     }
 
-    const downloadUrl = `https://codeload.github.com/ManifestHub/zip/refs/heads/${appid}`
+    const downloadUrl = `https://codeload.github.com/SteamAutoCracks/ManifestHub/zip/refs/heads/${appid}`
+    console.log("Fetching from GitHub:", downloadUrl)
 
     const response = await fetch(downloadUrl, {
       method: "GET",
       signal: AbortSignal.timeout(60000),
     })
 
+    console.log("GitHub response status:", response.status)
+
     if (response.status === 200) {
-      const body = response.body
+      const arrayBuffer = await response.arrayBuffer()
+      console.log("File size:", arrayBuffer.byteLength, "bytes")
 
-      if (!body) {
-        return NextResponse.json({ error: "No file content received" }, { status: 500 })
-      }
-
-      return new NextResponse(body, {
+      return new NextResponse(arrayBuffer, {
         status: 200,
         headers: {
           "Content-Type": "application/zip",
           "Content-Disposition": `attachment; filename="manifest-${appid}.zip"`,
-          "Content-Length": response.headers.get("content-length") || "",
+          "Content-Length": arrayBuffer.byteLength.toString(),
           "X-Game-ID": appid,
           "X-Game-Name": gameName,
+          "Cache-Control": "no-cache",
         },
       })
     } else if (response.status === 404) {
+      console.log("AppID not found on GitHub")
       return NextResponse.json({ error: "AppID Not Found" }, { status: 404 })
     } else {
+      console.log("GitHub fetch failed with status:", response.status)
       return NextResponse.json({ error: "Failed to fetch manifest" }, { status: response.status })
     }
   } catch (error: any) {
